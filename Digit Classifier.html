@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Digit Classifier</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              border: "hsl(214.3 31.8% 91.4%)",
+              input: "hsl(214.3 31.8% 91.4%)",
+              ring: "hsl(222.2 47.4% 11.2%)",
+              background: "hsl(0 0% 100%)",
+              foreground: "hsl(222.2 47.4% 11.2%)",
+              primary: {
+                DEFAULT: "hsl(222.2 47.4% 11.2%)",
+                foreground: "hsl(210 40% 98%)",
+              },
+              secondary: {
+                DEFAULT: "hsl(210 40% 96.1%)",
+                foreground: "hsl(222.2 47.4% 11.2%)",
+              },
+              muted: {
+                DEFAULT: "hsl(210 40% 96.1%)",
+                foreground: "hsl(215.4 16.3% 46.9%)",
+              },
+              accent: {
+                DEFAULT: "hsl(210 40% 96.1%)",
+                foreground: "hsl(222.2 47.4% 11.2%)",
+              },
+              card: {
+                DEFAULT: "hsl(0 0% 100%)",
+                foreground: "hsl(222.2 47.4% 11.2%)",
+              },
+            },
+          },
+        },
+      };
+    </script>
+  </head>
+  <body
+    class="min-h-screen p-8 flex flex-col items-center justify-center bg-gray-50"
+  >
+    <div class="w-full max-w-xl flex flex-col gap-6">
+      <header
+        class="border bg-card text-card-foreground shadow-sm rounded-xl p-6 flex flex-col gap-4"
+      >
+        <h1 class="text-3xl font-bold tracking-tight">Digit Classifier</h1>
+        <p class="text-muted-foreground text-sm">
+          Select a model, then use the Pen to draw a single digit (0-9) on
+          the canvas.
+        </p>
+      </header>
+
+      <main
+        class="border bg-card text-card-foreground shadow-sm rounded-xl p-6 flex flex-col gap-4"
+      >
+        <div class="flex flex-col sm:flex-row gap-3 items-end">
+          <select
+            name="model"
+            id="model"
+            class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+          ></select>
+        </div>
+
+      
+        <div class="flex flex-col gap-3 items-center">
+          <canvas
+            id="drawCanvas"
+            width="280"
+            height="280"
+            class="border rounded-lg bg-white shadow-inner touch-none"
+          ></canvas>
+          <div class="flex gap-2">
+            <button
+              id="penBtn"
+              class="px-3 py-1 bg-blue-500 text-white text-sm rounded hover:bg-blue-600"
+            >
+              Pen
+            </button>
+            <button
+              id="eraserBtn"
+              class="px-3 py-1 bg-gray-400 text-white text-sm rounded hover:bg-gray-500"
+            >
+              Eraser
+            </button>
+            <button
+              id="clearBtn"
+              class="px-3 py-1 bg-red-500 text-white text-sm rounded hover:bg-red-600"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+
+        <div
+          id="result"
+          class="text-center text-lg font-semibold text-gray-800 mt-2"
+        >
+          Draw a digit to begin.
+        </div>
+
+        <canvas id="probChart" height="100"></canvas>
+      </main>
+
+      <footer
+        class="border bg-card text-card-foreground shadow-sm rounded-xl p-6 flex flex-col gap-2 text-sm"
+      >
+        <div class="flex gap-2 items-center">
+          <span
+            class="flex h-2 w-2 rounded-full bg-green-500 animate-pulse"
+          ></span>
+          <p id="status" class="text-sm font-medium text-foreground">
+            initializing...
+          </p>
+        </div>
+
+        <p id="timer" class="text-muted-foreground text-xs"></p>
+      </footer>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script type="module">
+      let net = null;
+
+      const resultText = document.getElementById("result");
+      const models = ["mnist_mlp", "mnist_convnet"];
+      const modelSelect = document.getElementById("model");
+      const statusText = document.getElementById("status");
+      const timerText = document.getElementById("timer");
+
+      const error = (err) => {
+        statusText.innerHTML = `Error: ${err}`;
+        throw new Error(err);
+      };
+
+      const timer = async (func, label = "") => {
+        const start = performance.now();
+        const out = await func();
+        const delta = (performance.now() - start).toFixed(1);
+        console.log(`${delta} ms ${label}`);
+        timerText.innerHTML = `${delta} ms ${label}`;
+        return out;
+      };
+
+      const getDevice = async () => {
+        if (!navigator.gpu) error("WebGPU not supported.");
+        const adapter = await navigator.gpu.requestAdapter();
+        return await adapter.requestDevice({
+          requiredFeatures: ["shader-f16"],
+          powerPreference: "high-performance",
+        });
+      };
+
+      const loadNet = async (modelName) => {
+        const jsPath = `./${modelName}/${modelName}.js`;
+        const netPath = `./${modelName}/${modelName}.webgpu.safetensors`;
+        try {
+          statusText.innerHTML = "loading the model...";
+          const device = await getDevice();
+          const tinygrad = (await import(jsPath)).default;
+          net = await timer(
+            () => tinygrad.load(device, netPath),
+            "(compilation)",
+          );
+          statusText.innerHTML = "ready to classify";
+        } catch (e) {
+          error(e);
+        }
+      };
+
+      let isRunning = false;
+
+      const runNet = async () => {
+        if (isRunning) {
+          requestAnimationFrame(runNet);
+          return;
+        }
+        isRunning = true;
+        try {
+          await classifyDrawing();
+        } catch (err) {
+          console.error("Inference error:", err);
+        } finally {
+          isRunning = false;
+          requestAnimationFrame(runNet);
+        }
+      };
+
+      const setup = async () => {
+        for (const model of models) {
+          const modelOpt = document.createElement("option");
+          modelOpt.value = model;
+          modelOpt.innerHTML = model;
+          modelSelect.appendChild(modelOpt);
+        }
+        function handleModelChange(e) {
+          loadNet(e.target.value);
+        }
+        modelSelect.addEventListener("change", handleModelChange);
+        modelSelect.value = models[0];
+        await loadNet(modelSelect.value);
+
+        runNet();
+      };
+
+      const canvas = document.getElementById("drawCanvas");
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "white";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.lineWidth = 20;
+      ctx.lineCap = "round";
+      ctx.strokeStyle = "black";
+
+      let drawing = false;
+      let erasing = false;
+
+      const getPos = (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+        const y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+        return { x, y };
+      };
+
+      const startDraw = (e) => {
+        drawing = true;
+        const pos = getPos(e);
+        ctx.beginPath();
+        ctx.moveTo(pos.x, pos.y);
+      };
+      const draw = (e) => {
+        if (!drawing) return;
+        const pos = getPos(e);
+        ctx.strokeStyle = erasing ? "white" : "black";
+        ctx.lineTo(pos.x, pos.y);
+        ctx.stroke();
+      };
+      const endDraw = async () => {
+        drawing = false;
+        ctx.closePath();
+        await classifyDrawing();
+      };
+
+      canvas.addEventListener("mousedown", startDraw);
+      canvas.addEventListener("mousemove", draw);
+      canvas.addEventListener("mouseup", endDraw);
+      canvas.addEventListener("mouseout", endDraw);
+
+      canvas.addEventListener("touchstart", startDraw);
+      canvas.addEventListener("touchmove", draw);
+      canvas.addEventListener("touchend", endDraw);
+
+      document.getElementById("penBtn").onclick = () => (erasing = false);
+      document.getElementById("eraserBtn").onclick = () => (erasing = true);
+      document.getElementById("clearBtn").onclick = () => {
+        ctx.fillStyle = "white";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = "black";
+      };
+
+      const chartCtx = document.getElementById("probChart");
+      const chart = new Chart(chartCtx, {
+        type: "bar",
+        data: {
+          labels: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+          datasets: [
+            {
+              label: "Confidence",
+              data: Array(10).fill(0),
+              borderWidth: 1,
+            },
+          ],
+        },
+        options: {
+          scales: {
+            y: {
+              beginAtZero: true,
+              max: 1,
+            },
+          },
+        },
+      });
+
+      const classifyDrawing = async () => {
+        const input = preprocessCanvas();
+        if (!net) {
+          statusText.innerHTML = "Model not loaded yet.";
+          return;
+        }
+
+        let modelInput;
+        if (modelSelect.value === "mnist_mlp") {
+          if (input.length !== 784) {
+            error("Input shape mismatch for mnist_mlp. Expected 784 values.");
+            return;
+          }
+          modelInput = new Float32Array(input);
+        } else if (modelSelect.value === "mnist_convnet") {
+          if (input.length !== 784) {
+            error("Input shape mismatch for mnist_convnet. Expected 784 values.");
+            return;
+          }
+
+          const reshaped = new Float32Array(1 * 1 * 28 * 28);
+          reshaped.set(input);
+          modelInput = reshaped;
+        } else {
+          error("Unknown model selected.");
+          return;
+        }
+
+        const res = await timer(() => net(modelInput), "(inference)");
+        const logits = Array.from(new Float32Array(res[0]));
+
+        const exps = logits.map(Math.exp);
+        const sum = exps.reduce((a, b) => a + b, 0);
+        const probs = exps.map((v) => v / sum);
+
+        updateChart(probs);
+        const guess = probs.indexOf(Math.max(...probs));
+        if (probs[guess] > 0.3) {
+          resultText.innerHTML = `Prediction: <strong>${guess}</strong>`;
+        } else {
+          resultText.innerHTML = "";
+        }
+      };
+
+      const updateChart = (probs) => {
+        chart.data.datasets[0].data = probs;
+        chart.update();
+      };
+
+      const preprocessCanvas = () => {
+
+        const tempCanvas = document.createElement("canvas");
+        tempCanvas.width = 28;
+        tempCanvas.height = 28;
+        const tempCtx = tempCanvas.getContext("2d");
+
+        tempCtx.imageSmoothingEnabled = true;
+        tempCtx.imageSmoothingQuality = 'high';
+
+        tempCtx.fillStyle = "white";
+        tempCtx.fillRect(0, 0, 28, 28);
+        tempCtx.drawImage(canvas, 0, 0, 28, 28);
+
+        const imageData = tempCtx.getImageData(0, 0, 28, 28).data;
+        
+        const pixels = new Float32Array(28 * 28);
+        for (let i = 0; i < 28 * 28; i++) {
+          const r = imageData[i * 4 + 0];
+          const g = imageData[i * 4 + 1];
+          const b = imageData[i * 4 + 2];
+
+          const gray = 255 - (0.299 * r + 0.587 * g + 0.114 * b);
+          pixels[i] = (gray / 255.0 - 0.1307) / 0.3081;
+        }
+        return pixels;
+      };
+
+      setup().catch(console.error);
+    </script>
+  </body>
+</html>
