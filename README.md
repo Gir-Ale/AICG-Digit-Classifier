@@ -1,4 +1,6 @@
 # MLP/CNN 10 DIGIT CLASSIFIER
+<img width="260" height="365" alt="Capture d'écran 2025-10-30 123954" src="https://github.com/user-attachments/assets/a83c68ae-c457-4cc4-bb25-ec2f02dd8521" />
+<img width="260" height="365" alt="Capture d'écran 2025-10-30 124029" src="https://github.com/user-attachments/assets/a0f9f480-65a3-4a41-8cb1-6e86e5e7aa47" />
 
 ## Demo:
 
